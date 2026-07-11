@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>線上影音批量轉檔命名器</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    
+    <style>
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background-color: #f0f2f5;
+            color: #333;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 16px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+            max-width: 650px;
+            width: 100%;
+            text-align: center;
+        }
+        h2 { color: #007bff; margin-top: 0; margin-bottom: 8px; }
+        .hint { color: #666; font-size: 14px; margin-bottom: 24px; }
+        
+        .file-box {
+            display: block;
+            width: 100%;
+            margin: 20px 0;
+            padding: 25px 10px;
+            border: 2px dashed #007bff;
+            border-radius: 8px;
+            background: #f8fafc;
+            cursor: pointer;
+            box-sizing: border-box;
+        }
+        input[type="file"] {
+            width: 100%;
+            cursor: pointer;
+        }
+        
+        #fileList {
+            text-align: left;
+            margin: 20px 0;
+            max-height: 250px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 10px;
+            background: #fff;
+            display: none;
+        }
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px;
+            border-bottom: 1px solid #edf2f7;
+            gap: 10px;
+        }
+        .file-item:last-child { border-bottom: none; }
+        .file-info {
+            font-size: 14px;
+            color: #4a5568;
+            word-break: break-all;
+            flex: 1;
+        }
+        .rename-input {
+            width: 180px;
+            padding: 6px 8px;
+            border: 1px solid #cbd5e0;
+            border-radius: 4px;
+            font-size: 13px;
+            box-sizing: border-box;
+        }
+        .rename-input:focus {
+            border-color: #007bff;
+            outline: none;
+        }
+        .ext-tag {
+            font-size: 12px;
+            background: #e2e8f0;
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #4a5568;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        button {
+            padding: 14px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        #convertBtn {
+            flex: 2;
+            background-color: #007bff;
+            color: white;
+        }
+        #convertBtn:hover { background-color: #0056b3; }
+        #convertBtn:disabled { background-color: #cccccc; cursor: not-allowed; }
+        
+        #resetBtn {
+            flex: 1;
+            background-color: #dc3545;
+            color: white;
+        }
+        #resetBtn:hover { background-color: #bd2130; }
+        
+        #status {
+            margin: 20px 0;
+            font-weight: 500;
+            color: #28a745;
+            font-size: 15px;
+        }
+        #downloadLink {
+            display: none;
+            margin-top: 20px;
+            padding: 14px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: bold;
+            box-sizing: border-box;
+        }
+        #downloadLink:hover { background-color: #218838; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h2>🎬 線上影音批量轉檔命名器</h2>
+    <div class="hint" style="color: #d9534f; font-weight: bold;">⚠️ 注意：本工具僅修改檔名與變更副檔名，非真正解碼轉檔</div>
+    <div class="hint">支援多檔案批次重新命名 (留空則沿用原名)</div>
+    
+    <div class="file-box">
+        <input type="file" id="uploader" accept="video/*,audio/*" multiple>
+    </div>
+    
+    <div id="fileList"></div>
+    
+    <div id="status">🟢 系統準備就緒，請選取檔案！</div>
+    
+    <div class="btn-group">
+        <button id="convertBtn" disabled>開始處理</button>
+        <button id="resetBtn">全部清空</button>
+    </div>
+    
+    <a id="downloadLink">🎉 點此下載處理後的檔案</a>
+</div>
+
+<script>
+    const uploader = document.getElementById('uploader');
+    const convertBtn = document.getElementById('convertBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const status = document.getElementById('status');
+    const downloadLink = document.getElementById('downloadLink');
+    const fileListDiv = document.getElementById('fileList');
+
+    let selectedFiles = [];
+    let currentDownloadUrl = null; // 用來追踪目前的 Blob URL，以便釋放記憶體
+
+    // 清除舊的下載連結與記憶體
+    function revokeOldUrl() {
+        if (currentDownloadUrl) {
+            URL.revokeObjectURL(currentDownloadUrl);
+            currentDownloadUrl = null;
+        }
+    }
+
+    // 當使用者選取檔案時
+    uploader.addEventListener('change', () => {
+        fileListDiv.innerHTML = '';
+        selectedFiles = Array.from(uploader.files);
+        revokeOldUrl();
+        downloadLink.style.display = 'none';
+
+        if (selectedFiles.length === 0) {
+            fileListDiv.style.display = 'none';
+            convertBtn.disabled = true;
+            status.innerText = "🟢 系統準備就緒，請選取檔案！";
+            return;
+        }
+
+        fileListDiv.style.display = 'block';
+        convertBtn.disabled = false;
+        status.innerText = `已選取 ${selectedFiles.length} 個檔案，您可以在右側修改新檔名：`;
+
+        selectedFiles.forEach((file, index) => {
+            const isVideo = file.type.startsWith('video/') || ['mpg','3gp','mts','mov','mp4','avi','mkv'].some(ext => file.name.toLowerCase().endsWith(ext));
+            const targetExt = isVideo ? '.mp4' : '.mp3';
+            
+            // 安全擷取原始檔名 (處理無副檔名狀況)
+            const lastDotIndex = file.name.lastIndexOf('.');
+            const originalNameWithoutExt = lastDotIndex !== -1 ? file.name.substring(0, lastDotIndex) : file.name;
+
+            const item = document.createElement('div');
+            item.className = 'file-item';
+            item.innerHTML = `
+                <div class="file-info" title="${file.name}">${file.name}</div>
+                <input type="text" class="rename-input" id="rename-${index}" value="${originalNameWithoutExt}" placeholder="不改名請留空...">
+                <span class="ext-tag">${targetExt}</span>
+            `;
+            fileListDiv.appendChild(item);
+        });
+    });
+
+    // 點擊處理
+    convertBtn.addEventListener('click', async () => {
+        if (selectedFiles.length === 0) return;
+
+        convertBtn.disabled = true;
+        downloadLink.style.display = 'none';
+        revokeOldUrl(); // 處理前先釋放上一次的記憶體
+        
+        const zip = new JSZip();
+        let singleBlobUrl = null;
+        let singleFileName = "";
+
+        try {
+            for (let i = 0; i < selectedFiles.length; i++) {
+                const file = selectedFiles[i];
+                status.innerText = `⚡ 正在處理第 (${i + 1}/${selectedFiles.length}) 個檔案: ${file.name}...`;
+
+                const isVideo = file.type.startsWith('video/') || ['mpg','3gp','mts','mov','mp4','avi','mkv'].some(ext => file.name.toLowerCase().endsWith(ext));
+                const targetExt = isVideo ? '.mp4' : '.mp3';
+
+                // 獲取輸入框名字
+                let newName = document.getElementById(`rename-${i}`).value.trim();
+                if (!newName) {
+                    const lastDotIndex = file.name.lastIndexOf('.');
+                    newName = lastDotIndex !== -1 ? file.name.substring(0, lastDotIndex) : file.name;
+                }
+                const finalFileName = newName + targetExt;
+
+                // 讀取二進位數據
+                const arrayBuffer = await file.arrayBuffer();
+
+                if (selectedFiles.length === 1) {
+                    const blob = new Blob([arrayBuffer], { type: isVideo ? 'video/mp4' : 'audio/mp3' });
+                    singleBlobUrl = URL.createObjectURL(blob);
+                    currentDownloadUrl = singleBlobUrl; // 記錄下來以便日後釋放
+                    singleFileName = finalFileName;
+                } else {
+                    zip.file(finalFileName, arrayBuffer);
+                }
+            }
+
+            // 輸出型態判定
+            if (selectedFiles.length === 1) {
+                downloadLink.href = singleBlobUrl;
+                downloadLink.download = singleFileName;
+                downloadLink.innerText = `🎉 點此下載：${singleFileName}`;
+            } else {
+                status.innerText = "📦 正在將所有檔案打包成 ZIP 壓縮檔...";
+                const zipContent = await zip.generateAsync({ type: "blob" });
+                const url = URL.createObjectURL(zipContent);
+                currentDownloadUrl = url; // 記錄下來以便日後釋放
+                
+                downloadLink.href = url;
+                downloadLink.download = "已處理影音包_" + new Date().toISOString().slice(0,10) + ".zip";
+                downloadLink.innerText = "🎉 點此下載處理後的打包檔案 (ZIP)";
+            }
+
+            downloadLink.style.display = 'block';
+            status.innerText = `✅ 處理完成！`;
+
+        } catch (error) {
+            status.innerText = "❌ 處理過程中發生錯誤，請再試一次。";
+            console.error(error);
+        } finally {
+            convertBtn.disabled = false;
+        }
+    });
+
+    // 全部清空
+    resetBtn.addEventListener('click', () => {
+        uploader.value = '';
+        selectedFiles = [];
+        revokeOldUrl(); // 清空時釋放記憶體
+        fileListDiv.innerHTML = '';
+        fileListDiv.style.display = 'none';
+        downloadLink.style.display = 'none';
+        downloadLink.href = '';
+        convertBtn.disabled = true;
+        status.innerText = "🟢 系統已重設，請重新選取檔案！";
+    });
+</script>
+
+</body>
+</html>
